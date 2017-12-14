@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	//"time"
 
-	"github.com/jacobsa/go-serial/serial"
-	//"github.com/tarm/serial"
+	"github.com/tarm/serial"
 )
 
 var (
@@ -21,19 +19,21 @@ var (
 func main() {
 	flag.Parse()
 
-	o := serial.OpenOptions{
-		PortName:        *serialPath,
-		BaudRate:        115200,
-		DataBits:        8,
-		StopBits:        1,
-		MinimumReadSize: 4,
+	c := &serial.Config{
+		Name:     *serialPath,
+		Baud:     115200,
+		Size:     8,
+		StopBits: 1,
 	}
 
 	// Open the port.
-	s, err := serial.Open(o)
+	s, err := serial.OpenPort(c)
 	if err != nil {
 		log.Fatalf("serial.Open: %v", err)
 	}
+
+	//s.Write([]byte("SKVER"))
+	//s.WaitResponse([]byte"OK", []byte"NG")
 
 	reader := bufio.NewReaderSize(s, 4096)
 
