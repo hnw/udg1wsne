@@ -96,7 +96,6 @@ func main() {
 		}
 		if strings.HasPrefix(line, "EVENT 24 ") {
 			log.Fatal("PANA connection failed")
-			break
 		}
 		if strings.HasPrefix(line, "EVENT 25 ") {
 			break
