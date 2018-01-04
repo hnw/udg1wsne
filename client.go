@@ -2,10 +2,11 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
@@ -97,27 +98,17 @@ func main() {
 	for {
 		sec := 1
 		port := 3610
-		message := []byte{
-			// 詳細はECHONET Liteドキュメント「第2部 ECHONET Lite 通信ミドルウェア仕様」を参照のこと
-			0x10,       // EHD1 （0x10=ECHONET Lite)
-			0x81,       // EHD2 （0x81=電文形式1）
-			0x00, 0x01, // TID
-			0x05, 0xff, 0x01, // SEOJ （コントローラ）
-			0x02, 0x88, 0x01, // DEOJ （低圧スマート電力量メータ）
-			0x62, // ESV （プロパティ値読み出し要求）
-			0x01, //
-			0xe7, // EPC （瞬時電力計測値）
-			0x00,
-		}
+		req := NewEchoFrame(SmartElectricMeter, Get, InstantaneousElectricPower, []byte{})
+
 		time.Sleep(500 * time.Millisecond)
-		cmd := fmt.Sprintf("SKSENDTO %d %s %04X %d 0 %04X %s", sec, *ipAddr, port, sec, len(message), message)
+		rawFrame := req.Build()
+		cmd := fmt.Sprintf("SKSENDTO %d %s %04X %d 0 %04X %s", sec, *ipAddr, port, sec, len(rawFrame), rawFrame)
 		udpStatus, _ := SendSkCommand(ch, writer, cmd)
 		if strings.HasSuffix(udpStatus, " 00") {
 			// UDP送信成功
-			ReadEchonetLiteFrame(ch)
+			ReadEchonetLiteFrame(ch, req)
 		}
 	}
-
 	fmt.Println("finished")
 }
 
@@ -165,30 +156,14 @@ FOR:
 	return res, nil
 }
 
-func ParseUdpResponse(line string) map[string]string {
+func ParseUdpResponse(line string) *echoFrame {
 	a := strings.Split(line, " ")
-	frame := a[9]
-	m := map[string]string{}
-	m["EHD1"] = frame[0:2]   // ECHONET Lite電文ヘッダー1
-	m["EHD2"] = frame[2:4]   // ECHONET Lite電文ヘッダー2
-	m["TID"] = frame[4:8]    // トランザクションID
-	m["SEOJ"] = frame[8:14]  // 送信元ECHONET Liteオブジェクト指定
-	m["DEOJ"] = frame[14:20] // 相手先ECHONET Liteオブジェクト指定
-	m["ESV"] = frame[20:22]  // ECHONET Liteサービス
-	m["OPC"] = frame[22:24]  // 処理プロパティ数
-	m["EPC1"] = frame[24:26] // ECHONET Liteプロパティ
-	m["PDC1"] = frame[26:28] // EDTのバイト数
-	m["EDT1"] = frame[28:]   // プロパティ値データ
-	return m
-
-	//           SEOJ          ESV   EPC
-	//10 81 0001 0EF001 05FF01 72 01 D6 04 01028801
-	//10 81 0000 0EF001 0EF001 73 01 D5 04 01028801
-	//10 81 0001 028801 05FF01 72 01 E8 04 00140064
-	//xxxxxxxxxxxxxxxxxxxxxxxx
+	decoded, _ := hex.DecodeString(a[9])
+	fr, _ := ParseEchoFrame(decoded)
+	return fr
 }
 
-func ReadEchonetLiteFrame(input chan string) {
+func ReadEchonetLiteFrame(input chan string, req *echoFrame) {
 	timeout := 2 * time.Second
 	tm := time.NewTimer(timeout)
 FOR:
@@ -205,20 +180,19 @@ FOR:
 				fmt.Println(line)
 			}
 			if strings.HasPrefix(line, "ERXUDP ") {
-				m := ParseUdpResponse(line)
-				if m["SEOJ"] == "028801" && m["ESV"] == "72" {
-					if m["EPC1"] == "E7" {
-						v, _ := strconv.ParseInt(m["EDT1"], 16, 0)
+				res := ParseUdpResponse(line)
+				if req.CorrespondTo(res) {
+					if req.EPC[0] == InstantaneousElectricPower {
+						v := binary.BigEndian.Uint32(res.EDT[0])
 						log.Printf("%d [W]\n", v)
 						break FOR
-					} else if m["EPC1"] == "E8" {
-						v1, _ := strconv.ParseInt(m["EDT1"][:4], 16, 0)
-						log.Printf("R: %.1f [A]\n", float64(v1)/10.0)
-						v2, _ := strconv.ParseInt(m["EDT1"][4:], 16, 0)
-						log.Printf("T: %.1f [A]\n", float64(v2)/10.0)
+					} else if req.EPC[0] == InstantaneousCurrents {
+						r := binary.BigEndian.Uint16(res.EDT[0][0:2])
+						t := binary.BigEndian.Uint16(res.EDT[0][2:4])
+						log.Printf("R-phase: %.1f [A]\n", float64(r)/10.0)
+						log.Printf("T-phase: %.1f [A]\n", float64(t)/10.0)
 						break FOR
 					}
-
 				}
 			}
 			tm.Reset(timeout)
